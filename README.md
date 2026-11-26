@@ -8,7 +8,7 @@
 docker compose up --build -d
 ```
 
-打开 `http://127.0.0.1:18206/` 查看夜间巡检指令。左侧六个入口可展开运行证据。调整「巡检名额（次）」，点击「执行巡检排程」比较处置结果。结束后执行 `docker compose down --remove-orphans`。
+打开 `http://127.0.0.1:18206/` 查看夜间巡检指令。左侧六个入口可展开运行证据。调整「巡检名额（次）」，点击「执行巡检排程」比较处置结果。页面下方的「下一班预警线」列出各用水簇的改线依据与占用名额，「下一班工单」列出可重跑去重的巡检指令。结束后执行 `docker compose down --remove-orphans`。
 
 ## 独立业务模块
 
@@ -23,6 +23,7 @@ docker compose up --build -d
 
 - `GET /api/overview` 返回默认运行及其指纹。
 - `POST /api/scenario` 接收 `{"capacity": 3}`。入口接受 1–100 的整数，应用样例时使用该业务额度。
+- `POST /api/dispatch` 接收 `{"capacity": 6, "issued": [...]}`，带上已发工单台账重跑同一批回执，返回本批新增工单数（重跑应为 0）。
 - `GET /api/stages/water_balance` 查看该环节的独立证据，支持 `?capacity=3`。
 
 ```sh

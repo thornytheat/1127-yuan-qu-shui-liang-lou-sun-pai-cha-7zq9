@@ -96,3 +96,6 @@ class Track:
     cohort: str
     reason: str
     isolated_rate: float | None
+    alert_line: float | None = None
+    line_version: str = ""
+    baseline_floor: float | None = None

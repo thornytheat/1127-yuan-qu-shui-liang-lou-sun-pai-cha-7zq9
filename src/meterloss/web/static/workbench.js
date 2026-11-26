@@ -126,6 +126,32 @@ function renderEvidence() {
     }
 }
 
+const LINE_COLUMNS = {
+    cohort: '用水簇', usage: '营业类型', previous_line: '原预警线', adopted_line: '下一班预警线',
+    direction: '处置', confirmed_cases: '确认', excluded_cases: '排除', unjudged_cases: '缺测不判',
+    dispatches_before: '原占用', dispatches_after: '新占用', reason: '改线依据',
+};
+const TICKET_COLUMNS = {
+    ticket: '工单号', meter: '水表', sector: '分区', task: '任务', crew: '巡检组', state: '状态',
+    from_minute: '开始分', to_minute: '结束分', alert_line: '预警线', line_version: '预警线版本',
+};
+
+function renderLines(snapshot) {
+    const rows = snapshot.alert_lines || [];
+    const changed = rows.filter((row) => row.changed).length;
+    byId('lines-summary').textContent = rows.length
+        ? `${changed} 个簇改线 · 预警线版本 ${snapshot.line_version || '—'}`
+        : '本班无回放结果';
+    renderTable(byId('alert-lines'), rows, LINE_COLUMNS);
+}
+
+function renderTickets(snapshot) {
+    const rows = snapshot.dispatch_tickets || [];
+    const scheduled = rows.filter((row) => row.state === '已派单').length;
+    byId('tickets-summary').textContent = `${rows.length} 张 · 已派单 ${scheduled} · 本批新增 ${snapshot.metrics?.['新增工单'] ?? 0}`;
+    renderTable(byId('tickets'), rows, TICKET_COLUMNS);
+}
+
 function render(snapshot) {
     active = snapshot;
     selectedRow = null;
@@ -134,6 +160,8 @@ function render(snapshot) {
     byId('export').disabled = false;
     renderMetrics(snapshot.metrics);
     renderRows();
+    renderLines(snapshot);
+    renderTickets(snapshot);
     renderEvidence();
     const chart = byId('chart');
     chart.replaceChildren();

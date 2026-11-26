@@ -50,3 +50,25 @@ def test_large_request_returns_structured_error():
     response = application.test_client().post("/api/scenario", json={"capacity": "X" * 9000})
     assert response.status_code == 413
     assert response.get_json()["code"] == "REQUEST_TOO_LARGE"
+
+
+def test_workbench_returns_next_shift_lines_and_tickets():
+    model = application.test_client().get("/api/overview").get_json()
+    assert model["alert_lines"] and model["dispatch_tickets"]
+    assert model["line_version"] and all(row["line_version"] == model["line_version"]
+                                         for row in model["alert_lines"])
+    assert set(model["line_budget"]) == {"before", "after", "capacity"}
+    body = application.test_client().get("/").get_data(as_text=True)
+    assert "下一班预警线" in body and "下一班工单" in body
+
+
+def test_dispatch_replay_endpoint_reports_no_new_tickets():
+    client = application.test_client()
+    first = client.post("/api/scenario", json={"capacity": 6}).get_json()
+    replay = client.post("/api/dispatch", json={"capacity": 6, "issued": first["dispatch_tickets"]})
+    assert replay.status_code == 200
+    body = replay.get_json()
+    assert body["metrics"]["新增工单"] == 0
+    assert body["dispatch_tickets"] == first["dispatch_tickets"]
+    for data in ({"capacity": 6}, {"capacity": 6, "issued": "x"}, {"capacity": 0, "issued": []}):
+        assert client.post("/api/dispatch", json=data).status_code == 400

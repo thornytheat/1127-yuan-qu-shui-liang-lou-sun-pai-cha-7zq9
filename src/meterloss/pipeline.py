@@ -7,11 +7,13 @@ from .night_windows.calendar_replay import estimate_baseline,counter_pressure
 from .water_balance.district_mass import reconcile_districts
 from .water_balance.repair_effect import aggregate_repairs
 from .loss_screen.isolation_graph import localize
+from .loss_screen.alert_lines import calibrate,replay_cases,split_receipts
 from .field_rounds.emergency_replay import stress_assign
+from .field_rounds.ticketing import batch_fingerprint,compose_tickets,merge_tickets
 from .meter_ingress.service import validate_readings,meter_evidence
 from .night_windows.service import build_baseline,summarize_rates
-from .consumption_clusters.service import segment_profiles,best_overlap
-from .loss_screen.service import assess,evidence
+from .consumption_clusters.service import segment_profiles,cohort_usages,best_overlap
+from .loss_screen.service import assess,evidence,signals,dispatches,replay_signal
 from .field_rounds.service import route_work,details,crew_summary
 from .water_balance.service import finalize,receipt_index
 
@@ -20,7 +22,7 @@ SAMPLE=Path(__file__).resolve().parents[2]/"sample_data"
 def load(name):
     return json.loads((SAMPLE/name).read_text(encoding="utf-8"))
 
-def run(capacity:int|None=None)->dict:
+def run(capacity:int|None=None,issued=())->dict:
     cap=6 if capacity is None else capacity
     if type(cap) is not int or not 1<=cap<=100:
         raise ValueError("巡检容量须在 1 至 100")
@@ -36,34 +38,63 @@ def run(capacity:int|None=None)->dict:
     prior_notes=counter_pressure(prior,rules["policy"]["pressure_anchor"])
     profiles=load("historical_meter_profiles.json")
     operation,classes=segment_profiles(profiles,load("district_profiles.json"),rules["at"])
-    policy,findings=assess(baseline,current,classes,rules["policy"])
+
+    # 下一班预警线：只用本班交班前已结案的回执回放，迟到记录留到下一班。
+    labels=load("cohort_labels.json")
+    policy,projection=signals(baseline,current,classes,rules["policy"])
+    usable,deferred=split_receipts(load("repairs_returned.json"),classes,rules["recheck"])
+    cases=replay_cases(usable,replay_signal(projection))
+    decisions,budget=calibrate(cases,policy.version,policy.minimum_rate,
+        cohort_usages(labels,classes),cap,rules["recheck"],
+        lambda lines: dispatches(baseline,current,classes,policy,lines))
+    chosen={row.cohort:row for row in decisions}
+    lines={cohort:row.current for cohort,row in chosen.items()}
+    for info in classes.values():
+        decision=chosen.get(info["cohort"])
+        if decision is not None:
+            info["line_version"]=decision.version
+    policy,findings=assess(baseline,current,classes,rules["policy"],lines)
+
     assigned=route_work(findings,rules,cap)
     contingencies=stress_assign(findings,assigned,rules["crews"],rules["walks"],load("crew_contingencies.json"))
     source_fingerprint=hashlib.sha256(json.dumps([loaded,profiles,policy.version],sort_keys=True).encode()).hexdigest()
     returned=load("repairs_returned.json")
+
+    # 下一班巡检指令：同批回执重跑命中同一工单号，不新增工单。
+    line_version=decisions[0].version if decisions else ""
+    batch=batch_fingerprint(returned,cap,policy.version,line_version)
+    meter_line={row.meter:lines.get(row.cohort) for row in findings}
+    proposed=compose_tickets(assigned,line_version,meter_line)
+    issued_rows,new_count=merge_tickets(issued,proposed)
+
     checked,verified,audit=finalize(findings,assigned,returned,rules["recheck"],
         {"capacity":cap,"revision":source_fingerprint,"policy":rules["policy"]})
     pressure_restoration=aggregate_repairs(receipt_index(returned,rules["recheck"]),findings,policy.pressure_anchor)
-    labels=load("cohort_labels.json")
     cluster_score=best_overlap([item["usage"] for item in labels],[classes[item["meter"]]["cohort"] for item in labels])
     assignments={row.meter:row for row in assigned}
     result=[]
     for finding in findings:
         row=assignments[finding.meter]
         result.append({"meter":finding.meter,"sector":finding.sector,"cluster":finding.cohort,"peak":finding.excess,
-                       "score":finding.probability,"nights":finding.persistence,"state":finding.status,"crew":row.crew,
-                       "dispatch":row.state,"detail":finding.reason+" · "+row.notes})
+                       "score":finding.probability,"nights":finding.persistence,"state":finding.status,
+                       "line":finding.alert_line,"crew":row.crew,"dispatch":row.state,
+                       "detail":finding.reason+" · "+row.notes})
     by_night=defaultdict(list)
     for row in baseline+current:
         if row.rate is not None and not row.excluded:
             by_night[row.night].append(row.rate)
     graph=[{"label":key,"value":round(mean(samples),3)} for key,samples in sorted(by_night.items())]
     suspicious={"关阀仍过水","疑似持续漏损"}
+    changed=sum(row.changed for row in decisions)
     return {
         "metrics":{"巡检水表":len(findings),"待排查漏损":sum(row.status in suspicious for row in findings),
-                   "已派单":sum(bool(row.crew) for row in assigned),"复测回收升":verified.recovered_liters},
+                   "已派单":sum(bool(row.crew) for row in assigned),"复测回收升":verified.recovered_liters,
+                   "改线簇数":changed,"新增工单":new_count},
+        "line_version":line_version,
+        "batch":batch,
         "columns":{"meter":"水表","sector":"分区","cluster":"用水簇","peak":"余流 L/min","score":"经验尾概率",
-                   "nights":"连续夜","state":"漏损分级","crew":"巡检组","dispatch":"工单状态","detail":"追溯依据"},
+                   "nights":"连续夜","state":"漏损分级","line":"预警线 L/min","crew":"巡检组","dispatch":"工单状态",
+                   "detail":"追溯依据"},
         "rows":result,"series":graph,
         "stages":[{"title":"抄表校验","summary":f"取得 {len(spans)} 段可用脉冲，隔离 {len(issues)} 处异常",
                    "records":meter_evidence(spans,issues)},
@@ -71,10 +102,14 @@ def run(capacity:int|None=None)->dict:
                    "records":summarize_rates(current)+prior_notes},
                   {"title":"用水聚类","summary":f"{operation.size} 个历史画像，最优置换对齐率 {cluster_score:.0%}",
                    "records":list(classes.values())},
-                  {"title":"漏损筛查","summary":f"处置版本 {policy.version}，分别评估突增、持续和关阀余流",
+                  {"title":"漏损筛查","summary":f"处置版本 {policy.version}，预警线 {line_version}，分别评估突增、持续和关阀余流",
                    "records":evidence(findings,policy)+localization},
-                  {"title":"巡检配次","summary":f"配额 {cap}，已安排 {len(crew_summary(assigned))} 个值班组",
-                   "records":details(assigned)+contingencies},
+                  {"title":"巡检配次","summary":f"配额 {cap}，已安排 {len(crew_summary(assigned))} 个值班组，新增 {new_count} 张工单",
+                   "records":details(assigned)+contingencies+[row.as_record() for row in decisions]},
                   {"title":"水量追溯","summary":"工单与回执核验通过" if checked["passed"] else "工单存在时段冲突",
                    "records":audit+[item.describe() for item in district_balance]+pressure_restoration}],
+        "alert_lines":[row.as_record() for row in decisions],
+        "line_budget":budget,
+        "replay":{"cases":len(cases),"deferred":list(deferred)},
+        "dispatch_tickets":list(issued_rows),
     }

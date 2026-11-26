@@ -70,5 +70,17 @@
     "night_minutes": 90,
     "pressure": 430,
     "reviewer": "夜巡负责人"
+  },
+  {
+    "ticket": "XH-120",
+    "meter": "ZF-807",
+    "zone": "窑炉间",
+    "closed": 9010,
+    "fault": true,
+    "before_rate": 11.42,
+    "after_rate": 3.66,
+    "night_minutes": 90,
+    "pressure": 430,
+    "reviewer": "夜巡负责人"
   }
 ]

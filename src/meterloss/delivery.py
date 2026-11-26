@@ -21,8 +21,8 @@ _initial_snapshot = None
 _initial_lock = Lock()
 
 
-def snapshot(capacity=None):
-    business_result = run(capacity)
+def snapshot(capacity=None, issued=()):
+    business_result = run(capacity,issued)
     if len(business_result["stages"]) != len(MODULES):
         raise RuntimeError("运行证据缺少业务环节")
     content = json.dumps(business_result, ensure_ascii=False, allow_nan=False, sort_keys=True)
@@ -68,6 +68,26 @@ def scenario():
     except (BadRequest, UnsupportedMediaType, ValueError):
         return jsonify(code="INVALID_SCENARIO", message="请输入 1 到 100 之间的整数"), 400
     return jsonify(snapshot(capacity))
+
+
+@application.post("/api/dispatch")
+def dispatch():
+    """重跑同一批回执：把已发工单台账带上，返回本批新增工单数。"""
+    try:
+        body = request.get_json()
+        if not isinstance(body, dict) or set(body) != {"capacity", "issued"}:
+            raise ValueError("请提交仅包含 capacity 与 issued 的 JSON 对象")
+        capacity = parse_capacity(body["capacity"])
+        issued = body["issued"]
+        if not isinstance(issued, list):
+            raise ValueError("已发工单须为列表")
+    except (BadRequest, UnsupportedMediaType, ValueError):
+        return jsonify(code="INVALID_SCENARIO", message="请提交有效额度与已发工单台账"), 400
+    try:
+        result = snapshot(capacity, issued)
+    except (KeyError, TypeError, ValueError):
+        return jsonify(code="INVALID_LEDGER", message="已发工单台账格式不正确"), 400
+    return jsonify(result)
 
 
 @application.get("/api/stages/<module>")
